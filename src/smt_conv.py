@@ -66,6 +66,8 @@ class SMT_CONV:
 		for l in range(1, self.u_bound_layers):
 			net_restrictions = z3.And(net_restrictions, z3.Implies(self.blockers[l], self.blockers[l-1]))
 
+		net_restrictions = z3.And(net_restrictions, self.blockers[self.l_bound_layers-1])
+
 		for l in range(self.u_bound_layers):
 			for d in range(self.D):
 				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d] - self.stride[l*self.D+d] >= 0)
@@ -115,7 +117,7 @@ class SMT_CONV:
 
 			layer_input_shape = new_layer_input_shape
 
-		return z3.And(net_restrictions, z3.PbGe([(z3.Bool('blocker_l_%i' % i),1) for i in range(1, self.u_bound_layers+1)], self.l_bound_layers))
+		return net_restrictions#, z3.PbGe([(z3.Bool('blocker_l_%i' % i),1) for i in range(1, self.u_bound_layers+1)], self.l_bound_layers))
 
 	def get_solution(self):
 		solution = self.conv_solver.model()
@@ -207,7 +209,7 @@ class SMT_CONV:
 if __name__ == "__main__":
 
 	lower_bound_layers = 1
-	upper_bound_layers = 1
+	upper_bound_layers = 2
 	solver = SMT_CONV((30,30,30), (20,20,20), lower_bound_layers, upper_bound_layers)
 	solutions = solver.solve()
 	solver.get_architectures(solutions)
