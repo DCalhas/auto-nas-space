@@ -2,6 +2,10 @@ import z3
 
 import tensorflow as tf
 
+import time
+
+import matplotlib.pyplot as plt
+
 
 """
 SMT_CONV
@@ -31,7 +35,9 @@ class SMT_CONV:
 		assert type(output_shape) is tuple
 		assert len(input_shape) == len(output_shape)
 
+
 		self.D = len(input_shape)
+		self.conv_dim_layer = "Conv" + str(self.D) + "D"
 		self.input_shape = input_shape
 		self.output_shape = output_shape
 		self.l_bound_layers = l_bound_layers
@@ -69,8 +75,9 @@ class SMT_CONV:
 		net_restrictions = z3.And(net_restrictions, self.blockers[self.l_bound_layers-1])
 
 		for l in range(self.u_bound_layers):
+
 			for d in range(self.D):
-				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d] - self.stride[l*self.D+d] >= 0)
+				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d] - self.stride[l*self.D+d] > 0)
 				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d] > 0)
 				net_restrictions = z3.And(net_restrictions, self.stride[l*self.D+d] > 0)
 
@@ -81,8 +88,6 @@ class SMT_CONV:
 			new_layer_input_shape = ()
 
 			layer_restrictions = True
-
-			layer_restrictions = z3.And(layer_restrictions, self.blockers[l])
 
 			hidden_layer = True
 			output_layer = True
@@ -117,7 +122,7 @@ class SMT_CONV:
 
 			layer_input_shape = new_layer_input_shape
 
-		return net_restrictions#, z3.PbGe([(z3.Bool('blocker_l_%i' % i),1) for i in range(1, self.u_bound_layers+1)], self.l_bound_layers))
+		return net_restrictions
 
 	def get_solution(self):
 		solution = self.conv_solver.model()
@@ -172,7 +177,7 @@ class SMT_CONV:
 	def solve(self):
 		self.setup_restrictions()
 
-		self.conv_solver.set("timeout", 60000)
+		self.conv_solver.set("timeout", 600000000000)
 
 		#while there are solutions to be returned
 		while(self.conv_solver.check() == z3.sat):
@@ -187,7 +192,7 @@ class SMT_CONV:
 		strides = solution[1]
 
 		for layer in range(len(kernels)):
-			model.add(tf.keras.layers.Conv3D(1, kernels[layer], strides=strides[layer]))
+			model.add(getattr(tf.keras.layers,self.conv_dim_layer)(1, kernels[layer], strides=strides[layer]))
 		
 		model.build(input_shape=(None, ) + self.input_shape +(1,))
 
@@ -206,10 +211,44 @@ class SMT_CONV:
 
 
 
-if __name__ == "__main__":
+#number dimensions and number solutions for each diff
+diff_analysis = {1: [1, 2, 3, 4, 5, 6, 7, 8, 9], 2: [1, 4, 9, 16, 25, 36, 49, 64, 81], 3: [1, 8, 27, 64, 125, 216, 343, 512, 729]}
+solving_times = {1: [0.0045108795166015625,0.00709223747253418,0.004609107971191406,0.003916501998901367,0.005946159362792969,0.004069805145263672,0.004523754119873047,0.0041735172271728516,0.004436969757080078], 
+				2: [0.01716756820678711,0.01297760009765625,0.014728546142578125,0.017618894577026367,0.019097089767456055,0.026305437088012695,0.024593830108642578,0.02793407440185547,0.03563833236694336],
+				3: [0.015392303466796875,0.023629188537597656,0.09439229965209961,0.04838752746582031,0.15618085861206055,0.19048595428466797,0.19025492668151855,0.1710188388824463,0.26610422134399414], 
+				4: [0.04995918273925781,0.3442513942718506,0.293210506439209,0.31862640380859375,2.116061210632324,0.7530810832977295,1.1577751636505127,1.2944204807281494,1.887657642364502],
+				5:[0.37785959243774414,0.37280821800231934,0.5188636779785156,0.761563062667846,2.226407289505005,1.48002290725708,3.152721881866455,3.6443755626678467,16.281274795532227],
+				6: [0.2137293815612793,0.24453377723693848,1.5915162563323975,0.9848437309265137,24.00694489479065,27.443228721618652,41.5923912525177,19.983529090881348,57.34502840042114]}
 
-	lower_bound_layers = 1
-	upper_bound_layers = 2
-	solver = SMT_CONV((30,30,30), (20,20,20), lower_bound_layers, upper_bound_layers)
+def plot_solving_times():
+	plt.figure()
+	plt.plot(list(range(1,10)), solving_times[1], label="1 diff", linestyle="-")
+	plt.plot(list(range(1,10)), solving_times[2], label="2 diff", linestyle="-")
+	plt.plot(list(range(1,10)), solving_times[3], label="3 diff", linestyle="-")
+	plt.plot(list(range(1,10)), solving_times[4], label="4 diff", linestyle="-")
+	plt.plot(list(range(1,10)), solving_times[5], label="5 diff", linestyle="-")
+	plt.plot(list(range(1,10)), solving_times[6], label="6 diff", linestyle="-")
+	plt.legend()
+	plt.title("#Dimensions Layers (Log Scale)")
+	plt.xlabel("#Dimensions")
+	plt.ylabel("Solving time (s)")
+	plt.grid(True)
+	plt.yscale("log")
+	plt.savefig("solving_time.pdf", format="pdf")
+
+
+if __name__ == "__main__":
+	start_time=time.time()
+	lower_bound_layers = 4
+	upper_bound_layers = 4
+	solver = SMT_CONV((30,), (20,), lower_bound_layers, upper_bound_layers)
 	solutions = solver.solve()
+
+	print("Total solutions: ", len(solutions))
+	print("Took ", time.time()-start_time, " seconds")
+
 	solver.get_architectures(solutions)
+
+
+	
+
