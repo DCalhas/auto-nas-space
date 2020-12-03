@@ -6,6 +6,95 @@ import time
 
 import matplotlib.pyplot as plt
 
+import math
+
+import numpy as np
+
+from copy import deepcopy
+
+import gc
+
+
+
+
+"""
+HASH_XOR
+
+Hash function class 
+"""
+class HASH_XOR:
+
+	def __init__(self, n, m):
+		self.n = n
+		self.m = m
+		self.r = 2
+
+	def sample_h(self):
+
+		self.a = np.random.choice([0,1], size=self.n+self.m-1)
+		self.b = np.random.choice([0,1], size=self.m)
+
+	def subformula(self, variables, alpha):
+		xor_f = True
+		for j in range(self.m):
+
+			xor = z3.Xor(z3.And(variables[0], bool(self.a[j] == 1)), bool(self.b[j]))
+
+			for p in range(1,self.n):
+				
+				xor = z3.Xor(xor, z3.Xor(z3.And(variables[p], bool(self.a[j+p] == 1)), bool(self.b[j])))
+
+			xor_f = z3.And(xor_f, xor == bool(alpha[j]))
+			
+		return xor_f
+
+
+"""
+SAT_INTEGER
+
+An sat representation of an integer number
+
+it is constituted of n bits 
+
+"""
+class SAT_INTEGER:
+
+	"""
+	Receives a number of bits that represent an integer number
+	"""
+	def __init__(self, bits, name="name"):
+		assert type(bits) is int
+
+		self.bits=bits
+
+		self.var = []
+		for i in range(self.bits):
+			self.var += [z3.Bool(name + "_bit" + str(i+1))]
+
+	"""
+	Computes the integer representation
+	"""
+	def __to_int__(self):
+		int_repr = 1*self.var[0]
+		for i in range(1,self.bits):
+			int_repr += (2**i)*self.var[i]
+
+		return int_repr
+
+
+	"""
+	Given a model for the formula return the integer respective to self
+	"""
+
+	def __sat_solution__(self, solution):
+		
+		int_sol = 1*int(solution[self.var[0]].sexpr() == "true")
+
+		for i in range(1, self.bits):
+			int_sol += (2**i)*int(solution[self.var[i]].sexpr() == "true")
+
+		return int_sol
+
 
 """
 SMT_CONV
@@ -43,8 +132,37 @@ class SMT_CONV:
 		self.l_bound_layers = l_bound_layers
 		self.u_bound_layers = u_bound_layers
 		self.setup_variables()
+		self.setup_restrictions()
 
 		self.possible_combinations = []
+		self.solutions = []
+
+	def __to_smt_lib__(self, file_name=None):
+		smt_lib = ctxToSMT2Benchmark(self, status="unknown", name="benchmark", logic="QF_BV")
+		if(file_name != None):
+			f = open(file_name, "w")
+			f.write(smt_lib)
+			f.close()
+		return smt_lib
+
+	def __copy__(self, solutions=None):
+		copy = SMT_CONV(self.input_shape, self.output_shape, self.l_bound_layers, self.u_bound_layers)
+
+		if(solutions==None):
+			return copy
+
+		for solution in solutions:
+			copy.add_solution(solution)
+
+		return copy
+
+	def get_variables(self):
+		kernel_vars = []
+		stride_vars = []
+		for i in range(len(self.kernel)):
+			kernel_vars += self.kernel[i].var
+			stride_vars += self.stride[i].var
+		return kernel_vars+stride_vars+self.blockers
 
 	def setup_variables(self):
 		self.blockers = [z3.Bool("blocker_l_{0}".format(i)) for i in range(1,self.u_bound_layers+1)]
@@ -56,12 +174,16 @@ class SMT_CONV:
 	def setup_variables_layer(self):
 		for l in range(self.u_bound_layers):
 			for dimension in range(1, self.D+1):
-				self.kernel.append(z3.Int('k_' + str(dimension) + "_l" + str(l+1)))
-				self.stride.append(z3.Int('s_' + str(dimension) + "_l" + str(l+1)))
+				#self.kernel.append(z3.Int('k_' + str(dimension) + "_l" + str(l+1)))
+				#self.kernel.append(z3.BitVec('k_' + str(dimension) + "_l" + str(l+1),int(round(math.log2(max(self.input_shape))))))
+				#self.stride.append(z3.Int('s_' + str(dimension) + "_l" + str(l+1)))
+				#self.stride.append(z3.BitVec('s_' + str(dimension) + "_l" + str(l+1),int(round(math.log2(max(self.input_shape))))))
+				self.kernel.append(SAT_INTEGER(int(round(math.log2(max(self.input_shape)))), name='k_' + str(dimension) + "_l" + str(l+1)))
+				self.stride.append(SAT_INTEGER(int(round(math.log2(max(self.input_shape)))), name='s_' + str(dimension) + "_l" + str(l+1)))
 
 	def setup_restrictions(self):
-
-		self.conv_solver.add(self.setup_restrictions_layer(self.u_bound_layers))
+		self.f = self.setup_restrictions_layer(self.u_bound_layers)
+		self.conv_solver.add(self.f)
 
 	def setup_restrictions_layer(self, number_layers):
 		net_restrictions = True
@@ -77,9 +199,9 @@ class SMT_CONV:
 		for l in range(self.u_bound_layers):
 
 			for d in range(self.D):
-				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d] - self.stride[l*self.D+d] > 0)
-				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d] > 0)
-				net_restrictions = z3.And(net_restrictions, self.stride[l*self.D+d] > 0)
+				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d].__to_int__() - self.stride[l*self.D+d].__to_int__() > 0)
+				net_restrictions = z3.And(net_restrictions, self.kernel[l*self.D+d].__to_int__() > 0)
+				net_restrictions = z3.And(net_restrictions, self.stride[l*self.D+d].__to_int__() > 0)
 
 		layer_input_shape = self.input_shape
 		next_layer_output_shape = ()
@@ -96,12 +218,12 @@ class SMT_CONV:
 
 				if(l < self.u_bound_layers-1):
 					#hidden layer
-					out_l = 1+(layer_input_shape[d] - self.kernel[l*self.D+d])/self.stride[l*self.D+d]
-					out_next_l = 1+(out_l - self.kernel[(l+1)*self.D+d])/self.stride[(l+1)*self.D+d]
-					in_next_l = (out_next_l-1)*self.stride[(l+1)*self.D+d] + self.kernel[(l+1)*self.D+d]
+					out_l = 1+(layer_input_shape[d] - self.kernel[l*self.D+d].__to_int__())/self.stride[l*self.D+d].__to_int__()
+					out_next_l = 1+(out_l - self.kernel[(l+1)*self.D+d].__to_int__())/self.stride[(l+1)*self.D+d].__to_int__()
+					in_next_l = (out_next_l-1)*self.stride[(l+1)*self.D+d].__to_int__() + self.kernel[(l+1)*self.D+d].__to_int__()
 					hidden_layer = z3.And(hidden_layer, out_l == in_next_l)
 
-					output_layer = z3.And(output_layer, (self.output_shape[d] - 1)*self.stride[l*self.D+d] + self.kernel[l*self.D+d] == layer_input_shape[d])
+					output_layer = z3.And(output_layer, (self.output_shape[d] - 1)*self.stride[l*self.D+d].__to_int__() + self.kernel[l*self.D+d].__to_int__() == layer_input_shape[d])
 
 					hidden_layer = z3.And(hidden_layer, layer_restrictions)
 
@@ -109,7 +231,7 @@ class SMT_CONV:
 					if(l == number_layers-2):
 						next_layer_output_shape += (out_next_l,)
 				else:
-					output_layer = z3.And(output_layer, (self.output_shape[d] - 1)*self.stride[l*self.D+d] + self.kernel[l*self.D+d] == layer_input_shape[d])
+					output_layer = z3.And(output_layer, (self.output_shape[d] - 1)*self.stride[l*self.D+d].__to_int__() + self.kernel[l*self.D+d].__to_int__() == layer_input_shape[d])
 
 				output_layer = z3.And(output_layer, layer_restrictions)
 
@@ -124,8 +246,9 @@ class SMT_CONV:
 
 		return net_restrictions
 
-	def get_solution(self):
-		solution = self.conv_solver.model()
+	def get_solution(self, solution=None):
+		if(solution == None):
+			solution = self.conv_solver.model()
 
 		#get total layers
 		total_layers = 0
@@ -139,8 +262,8 @@ class SMT_CONV:
 			l_stride = ()
 			for dimension in range(self.D):
 
-				l_kernel += (solution[self.kernel[l*self.D+dimension]].as_long(),)
-				l_stride += (solution[self.stride[l*self.D+dimension]].as_long(),)
+				l_kernel += (self.kernel[l*self.D+dimension].__sat_solution__(solution),)
+				l_stride += (self.stride[l*self.D+dimension].__sat_solution__(solution),)
 
 			kernels.append(l_kernel)
 			strides.append(l_stride)
@@ -156,8 +279,8 @@ class SMT_CONV:
 			if(z3.is_false(solution[self.blockers[l]])):
 				continue
 			for d in range(self.D):
-				restriction = z3.Or(restriction, self.kernel[l*self.D+d] != solution[self.kernel[l*self.D+d]].as_long())
-				restriction = z3.Or(restriction, self.stride[l*self.D+d] != solution[self.stride[l*self.D+d]].as_long())
+				restriction = z3.Or(restriction, self.kernel[l*self.D+d].__to_int__() != self.kernel[l*self.D+d].__sat_solution__(solution))
+				restriction = z3.Or(restriction, self.stride[l*self.D+d].__to_int__() != self.stride[l*self.D+d].__sat_solution__(solution))
 
 		if(total_layers < self.u_bound_layers):
 			restriction = z3.Or(restriction, z3.Or(z3.Not(self.blockers[total_layers-1]), self.blockers[total_layers]))
@@ -166,23 +289,28 @@ class SMT_CONV:
 
 		return restriction
 
-	def add_solution(self):
+	def add_solution(self, solution=None):
 
-		kernels, strides, solution = self.get_solution()
+		kernels, strides, solution = self.get_solution(solution=solution)
 
 		self.possible_combinations.append((kernels, strides))
+		self.solutions.append(solution)
 
 		self.conv_solver.add(self.restrict_solution(solution))
 
-	def solve(self):
-		self.setup_restrictions()
 
+	def solve(self, n=math.inf, return_models=False):
 		self.conv_solver.set("timeout", 600000000000)
 
-		#while there are solutions to be returned
-		while(self.conv_solver.check() == z3.sat):
-			self.add_solution()
+		n_solutions = 0
 
+		#while there are solutions to be returned
+		while(self.conv_solver.check() == z3.sat and n_solutions < n):
+			self.add_solution()
+			n_solutions += 1
+
+		if(return_models):
+			return self.solutions
 		return self.possible_combinations
 
 	def build_architecture(self, solution, verbose=False):
@@ -237,18 +365,123 @@ def plot_solving_times():
 	plt.savefig("solving_time.pdf", format="pdf")
 
 
+def ctxToSMT2Benchmark(solver, status="unknown", name="benchmark", logic=""):
+	v = (z3.Ast * 0)()
+	return z3.Z3_benchmark_to_smtlib_string(z3.main_ctx().ref(), name, logic, status, "", 0, v, solver.f.as_ast())
+
+
+
+"""
+UniWit: Chakraborty et al. 2013
+
+
+"""
+class UniWit:
+
+	def __init__(self, n_samples):
+
+		self.n_samples = n_samples
+	
+	"""
+	sample solutions
+
+	F is an instance of SMT_CONV
+	"""
+	def sample(self, F, k=2, verbose=False):
+
+		sampled = 0
+		while(sampled < self.n_samples):
+
+			solution = self.uni_wit(F, k=2, sampled=sampled, verbose=verbose)
+			if(solution != None):
+				F.add_solution(solution)
+				sampled += 1
+				print("Sampled ", sampled, " solutions")
+
+				gc.collect()
+
+		return F.possible_combinations
+
+
+	"""
+	Algorithm of Chakraborty et al. 2013
+
+	Returns: {None, solution}
+	"""
+	def uni_wit(self, F, k=2, sampled=0, verbose=False):
+
+		V = F.get_variables()
+		n=len(V)
+		
+		pivot = int(2*n**(1/k))
+		S = F.__copy__(F.solutions).solve(n=pivot+1, return_models=True)[sampled:]
+
+		if(len(S) <= pivot):
+			j=np.random.choice(len(S))
+			return S[j]
+		else:
+			l = int((1/k)*np.log2(n))
+			i = l-1
+			if(verbose):
+				print("pivot = ", pivot)
+
+			while(i < n and not (len(S)>=1 and len(S)<=pivot)):
+				i+= 1
+				
+				h = HASH_XOR(n, int(i-l))
+				#sample h
+				h.sample_h()
+				#sample alpha
+				alpha = np.random.choice([0,1], size=int(i-l))
+
+				if(len(alpha)):
+					xor_formula = h.subformula(V, alpha)
+
+					_F = F.__copy__(F.solutions)
+					_F.conv_solver.add(xor_formula) #intersection with xor_formula
+					S = _F.solve(n=pivot+1, return_models=True)[sampled:]
+				else:
+					S = S
+
+				if(verbose):
+					print("Iteration ", int(i-l))
+					print("|S| = ", len(S))
+
+			if(len(S) > pivot or len(S) < 1):
+				return None
+			else:
+				j=np.random.choice(len(S))
+				return S[j]
+		
+		return None
+
+
 if __name__ == "__main__":
+	"""
 	start_time=time.time()
-	lower_bound_layers = 4
-	upper_bound_layers = 4
+	lower_bound_layers = 2
+	upper_bound_layers = 2
 	solver = SMT_CONV((30,), (20,), lower_bound_layers, upper_bound_layers)
+	#solver.__to_smt_lib__(file_name="demo.smt2")
 	solutions = solver.solve()
 
 	print("Total solutions: ", len(solutions))
 	print("Took ", time.time()-start_time, " seconds")
 
 	solver.get_architectures(solutions)
+	"""
 
+	start_time=time.time()
 
-	
+	n_solutions=10
+	lower_bound_layers = 4
+	upper_bound_layers = 4
+	F = SMT_CONV((30,), (20,), lower_bound_layers, upper_bound_layers)
 
+	uni_wit = UniWit(n_solutions)
+	solutions = uni_wit.sample(F, verbose=True)
+
+	print("Total solutions: ", len(solutions))
+	print("Took ", time.time()-start_time, " seconds")
+
+	F.get_architectures(solutions)
