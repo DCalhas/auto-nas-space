@@ -29,11 +29,16 @@ class HASH_XOR:
 		self.m = m
 		self.r = 2
 
+	"""
+	Computation of family of hash functions of the form H_conv(n,m,2)
+	"""
 	def sample_h(self):
-
 		self.a = np.random.choice([0,1], size=self.n+self.m-1)
 		self.b = np.random.choice([0,1], size=self.m)
 
+	"""
+	Compute h given alpha
+	"""
 	def subformula(self, variables, alpha):
 		xor_f = True
 		for j in range(self.m):
@@ -135,6 +140,7 @@ class SMT_CONV:
 		self.setup_restrictions()
 
 		self.possible_combinations = []
+		self.possible_combinations_binary = []
 		self.solutions = []
 
 	def __to_smt_lib__(self, file_name=None):
@@ -145,14 +151,14 @@ class SMT_CONV:
 			f.close()
 		return smt_lib
 
-	def __copy__(self, solutions=None):
+	def __copy__(self, solutions=None, binary=False):
 		copy = SMT_CONV(self.input_shape, self.output_shape, self.l_bound_layers, self.u_bound_layers)
 
 		if(solutions==None):
 			return copy
 
 		for solution in solutions:
-			copy.add_solution(solution)
+			copy.add_solution(solution=solution, binary=binary)
 
 		return copy
 
@@ -246,10 +252,26 @@ class SMT_CONV:
 
 		return net_restrictions
 
-	def get_solution(self, solution=None):
+	def add_binary_model(self, solution):
+
+		binary_solution = []
+
+		for var in solution:
+			if(type(solution[var]) is not z3.FuncInterp):
+				binary_solution += [solution[var].sexpr() == "true"]
+
+		self.possible_combinations_binary += [binary_solution]
+
+	def get_binary_solutions(self):
+		return self.possible_combinations_binary
+
+	def get_solution(self, binary=False, solution=None):
 		if(solution == None):
 			solution = self.conv_solver.model()
 
+		if(binary):
+			self.add_binary_model(solution)
+		
 		#get total layers
 		total_layers = 0
 		for l in self.blockers:
@@ -289,9 +311,9 @@ class SMT_CONV:
 
 		return restriction
 
-	def add_solution(self, solution=None):
+	def add_solution(self, binary=False, solution=None):
 
-		kernels, strides, solution = self.get_solution(solution=solution)
+		kernels, strides, solution = self.get_solution(solution=solution, binary=binary)
 
 		self.possible_combinations.append((kernels, strides))
 		self.solutions.append(solution)
@@ -299,18 +321,21 @@ class SMT_CONV:
 		self.conv_solver.add(self.restrict_solution(solution))
 
 
-	def solve(self, n=math.inf, return_models=False):
+	def solve(self, K=math.inf, binary=False, return_models=False):
 		self.conv_solver.set("timeout", 600000000000)
 
 		n_solutions = 0
 
 		#while there are solutions to be returned
-		while(self.conv_solver.check() == z3.sat and n_solutions < n):
-			self.add_solution()
+		while(self.conv_solver.check() == z3.sat and n_solutions < K):
+			self.add_solution(binary=binary)
 			n_solutions += 1
 
 		if(return_models):
 			return self.solutions
+
+		if(binary):
+			self.possible_combinations_binary
 		return self.possible_combinations
 
 	def build_architecture(self, solution, verbose=False):
@@ -336,6 +361,127 @@ class SMT_CONV:
 			architectures.append(self.build_architecture(solution, verbose=True))
 
 		return architectures
+
+"""
+UniWit: Chakraborty et al. 2013
+
+
+"""
+class UniWit:
+
+	def __init__(self, n_samples):
+
+		self.n_samples = n_samples
+	
+	"""
+	sample solutions
+
+	F is an instance of SMT_CONV
+	"""
+	def sample(self, F, k=2, verbose=False, binary=False, viz_verbose=False):
+
+		sampling_time = []
+		sampled = 0
+		previous_i = 0
+
+		while(sampled < self.n_samples):
+
+			start_t = time.time()
+			solution, previous_i = self.uni_wit(F, k=k, previous_i=previous_i, sampled=sampled, binary=binary, verbose=verbose)
+			previous_i -= 1
+			#case where solution space has less than n_samples to be sampled
+			if(type(solution) is int):
+				if(solution == -1):
+					if(verbose):
+						print("No more solutions in the solution space to be sampled")
+					if(len(F.__copy__(F.solutions, binary=binary).solve(K=1, return_models=True, binary=False))):
+						continue
+					break
+			elif(solution != None):
+				sampling_time.append(time.time()-start_t)
+				F.add_solution(solution=solution, binary=binary)
+				sampled += 1
+				print("Sampled ", sampled, " solutions")
+
+				gc.collect()
+
+		average_sampling_time = np.mean(sampling_time)
+		if(verbose):
+			print("Average sampling time: ", average_sampling_time, " seconds")
+
+		if(viz_verbose):
+			plt.figure()
+			plt.plot(list(range(1,len(sampling_time)+1)), sampling_time, linestyle="-", color="red")
+			plt.title("Iteration sampling time")
+			plt.xlabel("Iteration")
+			plt.ylabel("Sampling time (s)")
+			plt.xticks(range(1,len(sampling_time)+1))
+			plt.grid(True)
+			plt.savefig(str(F.l_bound_layers) + "_sampling_time.pdf", format="pdf")
+
+		return F.possible_combinations
+
+
+	"""
+	Algorithm of Chakraborty et al. 2013
+
+	Returns: {None, solution}
+	"""
+	def uni_wit(self, F, k=2, sampled=0, previous_i=0, binary=False, verbose=False):
+
+		V = F.get_variables()
+		n=len(V)
+		
+		pivot = int(2*n**(1/k))
+		
+		if(verbose):
+			print("pivot = ", pivot)
+
+		S = F.__copy__(F.solutions, binary=binary).solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+
+		if(len(S) < 1):
+			return -1, 0
+
+		if(len(S) <= pivot):
+			j=np.random.choice(len(S))
+			return S[j], 0
+		else:
+			l = int((1/k)*np.log2(n))
+			i = l-1
+
+			if(i < previous_i):
+				i = previous_i-1
+
+			while(i < n and not (len(S)>=1 and len(S)<=pivot)):
+				i+= 1
+				
+				h = HASH_XOR(n, int(i-l))
+				#sample h
+				h.sample_h()
+				#sample alpha
+				alpha = np.random.choice([0,1], size=int(i-l))
+
+				if(len(alpha)):
+					xor_formula = h.subformula(V, alpha)
+
+					_F = F.__copy__(F.solutions, binary=binary)
+					_F.conv_solver.add(xor_formula) #intersection with xor_formula
+					S = _F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+				else:
+					S = S
+
+				if(verbose):
+					print("Iteration ", int(i-l))
+					print("|S| = ", len(S))
+
+			if(len(S) > pivot or len(S) < 1):
+				return None, i
+			else:
+				j=np.random.choice(len(S))
+				return S[j], i
+		
+		return None, 0
+
 
 
 
@@ -369,93 +515,6 @@ def ctxToSMT2Benchmark(solver, status="unknown", name="benchmark", logic=""):
 	v = (z3.Ast * 0)()
 	return z3.Z3_benchmark_to_smtlib_string(z3.main_ctx().ref(), name, logic, status, "", 0, v, solver.f.as_ast())
 
-
-
-"""
-UniWit: Chakraborty et al. 2013
-
-
-"""
-class UniWit:
-
-	def __init__(self, n_samples):
-
-		self.n_samples = n_samples
-	
-	"""
-	sample solutions
-
-	F is an instance of SMT_CONV
-	"""
-	def sample(self, F, k=2, verbose=False):
-
-		sampled = 0
-		while(sampled < self.n_samples):
-
-			solution = self.uni_wit(F, k=2, sampled=sampled, verbose=verbose)
-			if(solution != None):
-				F.add_solution(solution)
-				sampled += 1
-				print("Sampled ", sampled, " solutions")
-
-				gc.collect()
-
-		return F.possible_combinations
-
-
-	"""
-	Algorithm of Chakraborty et al. 2013
-
-	Returns: {None, solution}
-	"""
-	def uni_wit(self, F, k=2, sampled=0, verbose=False):
-
-		V = F.get_variables()
-		n=len(V)
-		
-		pivot = int(2*n**(1/k))
-		S = F.__copy__(F.solutions).solve(n=pivot+1, return_models=True)[sampled:]
-
-		if(len(S) <= pivot):
-			j=np.random.choice(len(S))
-			return S[j]
-		else:
-			l = int((1/k)*np.log2(n))
-			i = l-1
-			if(verbose):
-				print("pivot = ", pivot)
-
-			while(i < n and not (len(S)>=1 and len(S)<=pivot)):
-				i+= 1
-				
-				h = HASH_XOR(n, int(i-l))
-				#sample h
-				h.sample_h()
-				#sample alpha
-				alpha = np.random.choice([0,1], size=int(i-l))
-
-				if(len(alpha)):
-					xor_formula = h.subformula(V, alpha)
-
-					_F = F.__copy__(F.solutions)
-					_F.conv_solver.add(xor_formula) #intersection with xor_formula
-					S = _F.solve(n=pivot+1, return_models=True)[sampled:]
-				else:
-					S = S
-
-				if(verbose):
-					print("Iteration ", int(i-l))
-					print("|S| = ", len(S))
-
-			if(len(S) > pivot or len(S) < 1):
-				return None
-			else:
-				j=np.random.choice(len(S))
-				return S[j]
-		
-		return None
-
-
 if __name__ == "__main__":
 	"""
 	start_time=time.time()
@@ -474,12 +533,12 @@ if __name__ == "__main__":
 	start_time=time.time()
 
 	n_solutions=10
-	lower_bound_layers = 4
-	upper_bound_layers = 4
+	lower_bound_layers = 6
+	upper_bound_layers = 6
 	F = SMT_CONV((30,), (20,), lower_bound_layers, upper_bound_layers)
-
+	print("#Variables: ", len(F.get_variables()))
 	uni_wit = UniWit(n_solutions)
-	solutions = uni_wit.sample(F, verbose=True)
+	solutions = uni_wit.sample(F, verbose=True, viz_verbose=True)
 
 	print("Total solutions: ", len(solutions))
 	print("Took ", time.time()-start_time, " seconds")
