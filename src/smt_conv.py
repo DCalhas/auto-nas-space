@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from copy import deepcopy
+from copy import deepcopy, copy
 
 import gc
 
@@ -338,6 +338,21 @@ class SMT_CONV:
 			self.possible_combinations_binary
 		return self.possible_combinations
 
+
+	def __push__(self):
+		self.conv_solver.push()
+		self.push_solutions = copy(self.solutions)
+		self.push_possible_combinations = deepcopy(self.possible_combinations)
+		self.push_possible_combinations_binary = deepcopy(self.possible_combinations_binary)
+		
+
+	def __pop__(self):
+		self.conv_solver.pop()
+		self.solutions = self.push_solutions
+		self.possible_combinations = self.push_possible_combinations
+		self.possible_combinations_binary = self.push_possible_combinations_binary
+
+
 	def build_architecture(self, solution, verbose=False):
 		model = tf.keras.Sequential()
 
@@ -394,8 +409,6 @@ class UniWit:
 				if(solution == -1):
 					if(verbose):
 						print("No more solutions in the solution space to be sampled")
-					if(len(F.__copy__(F.solutions, binary=binary).solve(K=1, return_models=True, binary=False))):
-						continue
 					break
 			elif(solution != None):
 				sampling_time.append(time.time()-start_t)
@@ -437,8 +450,15 @@ class UniWit:
 		if(verbose):
 			print("pivot = ", pivot)
 
-		S = F.__copy__(F.solutions, binary=binary).solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+		iteration_time = time.time()
 
+		F.__push__()
+		S = F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+		F.__pop__()
+
+		if(verbose):
+			print("First solving took ", time.time()-iteration_time, " seconds")
+		
 		if(len(S) < 1):
 			return -1, 0
 
@@ -453,6 +473,8 @@ class UniWit:
 				i = previous_i-1
 
 			while(i < n and not (len(S)>=1 and len(S)<=pivot)):
+				iteration_time = time.time()
+				
 				i+= 1
 				
 				h = HASH_XOR(n, int(i-l))
@@ -464,15 +486,17 @@ class UniWit:
 				if(len(alpha)):
 					xor_formula = h.subformula(V, alpha)
 
-					_F = F.__copy__(F.solutions, binary=binary)
-					_F.conv_solver.add(xor_formula) #intersection with xor_formula
-					S = _F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+					F.__push__()
+					F.conv_solver.add(xor_formula) #intersection with xor_formula
+					S = F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+					F.__pop__()
 				else:
 					S = S
 
 				if(verbose):
 					print("Iteration ", int(i-l))
 					print("|S| = ", len(S))
+					print("Iteration took ", time.time()-iteration_time, " seconds")
 
 			if(len(S) > pivot or len(S) < 1):
 				return None, i
@@ -533,9 +557,9 @@ if __name__ == "__main__":
 	start_time=time.time()
 
 	n_solutions=10
-	lower_bound_layers = 6
-	upper_bound_layers = 6
-	F = SMT_CONV((30,), (20,), lower_bound_layers, upper_bound_layers)
+	lower_bound_layers = 1
+	upper_bound_layers = 5
+	F = SMT_CONV((30,30,30), (20,20,20), lower_bound_layers, upper_bound_layers)
 	print("#Variables: ", len(F.get_variables()))
 	uni_wit = UniWit(n_solutions)
 	solutions = uni_wit.sample(F, verbose=True, viz_verbose=True)
