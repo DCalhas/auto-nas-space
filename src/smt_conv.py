@@ -377,6 +377,26 @@ class SMT_CONV:
 
 		return architectures
 
+
+def check_sat(formula, model):
+
+	for v in model:
+
+		if(not (v.name() == "div0" or v.name() == "mod0")):
+			value = model[v].sexpr() == "true"
+
+			if(value):
+				formula = z3.And(formula, z3.Bool(v.name()) == True)
+			else:
+				formula = z3.And(formula, z3.Bool(v.name()) == False)
+
+	temp = z3.Solver()
+	temp.add(formula)
+
+	result = temp.check()
+
+	return result == z3.sat
+
 """
 UniWit: Chakraborty et al. 2013
 
@@ -393,17 +413,16 @@ class UniWit:
 
 	F is an instance of SMT_CONV
 	"""
-	def sample(self, F, k=2, verbose=False, binary=False, viz_verbose=False):
+	def sample(self, F, k=2, previous_i=0, verbose=False, binary=False, viz_verbose=False):
 
 		sampling_time = []
 		sampled = 0
-		previous_i = 0
 
 		while(sampled < self.n_samples):
 
 			start_t = time.time()
+			#solution, previous_i = self.uni_wit(F, k=k, previous_i=previous_i, sampled=sampled, binary=binary, verbose=verbose)
 			solution, previous_i = self.uni_wit(F, k=k, previous_i=previous_i, sampled=sampled, binary=binary, verbose=verbose)
-			previous_i -= 1
 			#case where solution space has less than n_samples to be sampled
 			if(type(solution) is int):
 				if(solution == -1):
@@ -441,6 +460,7 @@ class UniWit:
 	Returns: {None, solution}
 	"""
 	def uni_wit(self, F, k=2, sampled=0, previous_i=0, binary=False, verbose=False):
+		iteration_times = []
 
 		V = F.get_variables()
 		n=len(V)
@@ -452,13 +472,17 @@ class UniWit:
 
 		iteration_time = time.time()
 
-		F.__push__()
-		S = F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
-		F.__pop__()
+		S = range(pivot+2)
 
-		if(verbose):
-			print("First solving took ", time.time()-iteration_time, " seconds")
-		
+		if(previous_i == 0):		
+			F.__push__()
+			S = F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
+			F.__pop__()
+
+			iteration_times.append(time.time()-iteration_time)
+			if(verbose):
+				print("First solving took", time.time()-iteration_time, " seconds")
+	
 		if(len(S) < 1):
 			return -1, 0
 
@@ -474,7 +498,7 @@ class UniWit:
 
 			while(i < n and not (len(S)>=1 and len(S)<=pivot)):
 				iteration_time = time.time()
-				
+
 				i+= 1
 				
 				h = HASH_XOR(n, int(i-l))
@@ -486,10 +510,19 @@ class UniWit:
 				if(len(alpha)):
 					xor_formula = h.subformula(V, alpha)
 
+					if(previous_i== 0):
+
+						for s in S:
+							if(not check_sat(xor_formula, s)):
+								print("Not SAT")
+								break
+
 					F.__push__()
 					F.conv_solver.add(xor_formula) #intersection with xor_formula
 					S = F.solve(K=pivot+1, return_models=True, binary=binary)[sampled:]
 					F.__pop__()
+
+					iteration_times.append(time.time()-iteration_time)
 				else:
 					S = S
 
@@ -497,6 +530,8 @@ class UniWit:
 					print("Iteration ", int(i-l))
 					print("|S| = ", len(S))
 					print("Iteration took ", time.time()-iteration_time, " seconds")
+
+			print("Average iteration time: ", sum(iteration_times)/len(iteration_times))
 
 			if(len(S) > pivot or len(S) < 1):
 				return None, i
@@ -510,29 +545,66 @@ class UniWit:
 
 
 #number dimensions and number solutions for each diff
-diff_analysis = {1: [1, 2, 3, 4, 5, 6, 7, 8, 9], 2: [1, 4, 9, 16, 25, 36, 49, 64, 81], 3: [1, 8, 27, 64, 125, 216, 343, 512, 729]}
-solving_times = {1: [0.0045108795166015625,0.00709223747253418,0.004609107971191406,0.003916501998901367,0.005946159362792969,0.004069805145263672,0.004523754119873047,0.0041735172271728516,0.004436969757080078], 
+#diff_analysis = {1: [1, 2, 3, 4, 5, 6, 7, 8, 9], 2: [1, 4, 9, 16, 25, 36, 49, 64, 81], 3: [1, 8, 27, 64, 125, 216, 343, 512, 729]}
+diff_analysis = {1: [1, 2, 3, 4, 5, 6, 7, 8, 9], 
+				2: [1, 4, 9, 16, 25, 36, 49, 64, 81], 
+				3: [1, 8, 27, 64, 125, 216, 343, 512, 729],
+				4: [1, 16, 81, 256, 625, 1296, 2401, 4096, 6561 ]}
+layers_analysis = {1: [], 
+				2: [], 
+				3: [],
+				4: []}
+solving_times_dimensions = {1: [0.0045108795166015625,0.00709223747253418,0.004609107971191406,0.003916501998901367,0.005946159362792969,0.004069805145263672,0.004523754119873047,0.0041735172271728516,0.004436969757080078], 
 				2: [0.01716756820678711,0.01297760009765625,0.014728546142578125,0.017618894577026367,0.019097089767456055,0.026305437088012695,0.024593830108642578,0.02793407440185547,0.03563833236694336],
 				3: [0.015392303466796875,0.023629188537597656,0.09439229965209961,0.04838752746582031,0.15618085861206055,0.19048595428466797,0.19025492668151855,0.1710188388824463,0.26610422134399414], 
 				4: [0.04995918273925781,0.3442513942718506,0.293210506439209,0.31862640380859375,2.116061210632324,0.7530810832977295,1.1577751636505127,1.2944204807281494,1.887657642364502],
 				5:[0.37785959243774414,0.37280821800231934,0.5188636779785156,0.761563062667846,2.226407289505005,1.48002290725708,3.152721881866455,3.6443755626678467,16.281274795532227],
 				6: [0.2137293815612793,0.24453377723693848,1.5915162563323975,0.9848437309265137,24.00694489479065,27.443228721618652,41.5923912525177,19.983529090881348,57.34502840042114]}
 
+solving_times_layers = {1: [], 
+				2: [],
+				3: [], 
+				4: [],
+				5:[],
+				6: []}
+
 def plot_solving_times():
 	plt.figure()
-	plt.plot(list(range(1,10)), solving_times[1], label="1 diff", linestyle="-")
-	plt.plot(list(range(1,10)), solving_times[2], label="2 diff", linestyle="-")
-	plt.plot(list(range(1,10)), solving_times[3], label="3 diff", linestyle="-")
-	plt.plot(list(range(1,10)), solving_times[4], label="4 diff", linestyle="-")
-	plt.plot(list(range(1,10)), solving_times[5], label="5 diff", linestyle="-")
-	plt.plot(list(range(1,10)), solving_times[6], label="6 diff", linestyle="-")
+	plt.rc('font', family='serif')
+	plt.plot(list(range(1,10)), solving_times_dimensions[1], label=r'$I-O=1$', linestyle="-")
+	plt.plot(list(range(1,10)), solving_times_dimensions[2], label=r'$I-O=2$', linestyle="-")
+	plt.plot(list(range(1,10)), solving_times_dimensions[3], label=r'$I-O=3$', linestyle="-")
+	plt.plot(list(range(1,10)), solving_times_dimensions[4], label=r'$I-O=4$', linestyle="-")
+	plt.plot(list(range(1,10)), solving_times_dimensions[5], label=r'$I-O=5$', linestyle="-")
+	plt.plot(list(range(1,10)), solving_times_dimensions[6], label=r'$I-O=6$', linestyle="-")
 	plt.legend()
-	plt.title("#Dimensions Layers (Log Scale)")
+	#plt.title("#Dimensions Layers (Log Scale)")
 	plt.xlabel("#Dimensions")
-	plt.ylabel("Solving time (s)")
+	plt.ylabel("Solving time (seconds)")
 	plt.grid(True)
 	plt.yscale("log")
+	plt.rc('xtick', labelsize='x-small')
+	plt.rc('ytick', labelsize='x-small')
+	plt.tight_layout()
 	plt.savefig("solving_time.pdf", format="pdf")
+
+def plot_diff_analysis():
+	plt.figure()
+	plt.rc('font', family='serif')
+	plt.plot(list(range(2,11)), diff_analysis[1], label='1-Dimensional', linestyle="-", marker='^')
+	plt.plot(list(range(2,11)), diff_analysis[2], label='2-Dimensional', linestyle="-", marker='o')
+	plt.plot(list(range(2,11)), diff_analysis[3], label='3-Dimensional', linestyle="-", marker='*')
+	plt.plot(list(range(2,11)), diff_analysis[4], label='4-Dimensional', linestyle="-", marker='X')
+	plt.legend()
+	#plt.title("#Dimensions Layers (Log Scale)")
+	plt.xlabel(r'$I-O$')
+	plt.ylabel("#Solutions for " + r'$n=N=2$')
+	plt.grid(True)
+	plt.yscale("log")
+	plt.rc('xtick', labelsize='x-small')
+	plt.rc('ytick', labelsize='x-small')
+	plt.tight_layout()
+	plt.savefig("diff_n_solutions.pdf", format="pdf")
 
 
 def ctxToSMT2Benchmark(solver, status="unknown", name="benchmark", logic=""):
@@ -540,31 +612,53 @@ def ctxToSMT2Benchmark(solver, status="unknown", name="benchmark", logic=""):
 	return z3.Z3_benchmark_to_smtlib_string(z3.main_ctx().ref(), name, logic, status, "", 0, v, solver.f.as_ast())
 
 if __name__ == "__main__":
-	"""
+
 	start_time=time.time()
 	lower_bound_layers = 2
 	upper_bound_layers = 2
-	solver = SMT_CONV((30,), (20,), lower_bound_layers, upper_bound_layers)
+	solver = SMT_CONV((30,30,30,30), (20,20,20,20), lower_bound_layers, upper_bound_layers)
 	#solver.__to_smt_lib__(file_name="demo.smt2")
 	solutions = solver.solve()
 
 	print("Total solutions: ", len(solutions))
 	print("Took ", time.time()-start_time, " seconds")
 
-	solver.get_architectures(solutions)
-	"""
-
 	start_time=time.time()
-
-	n_solutions=10
-	lower_bound_layers = 1
-	upper_bound_layers = 5
-	F = SMT_CONV((30,30,30), (20,20,20), lower_bound_layers, upper_bound_layers)
-	print("#Variables: ", len(F.get_variables()))
-	uni_wit = UniWit(n_solutions)
-	solutions = uni_wit.sample(F, verbose=True, viz_verbose=True)
+	lower_bound_layers = 3
+	upper_bound_layers = 3
+	solver = SMT_CONV((30,30,30,30), (20,20,20,20), lower_bound_layers, upper_bound_layers)
+	#solver.__to_smt_lib__(file_name="demo.smt2")
+	solutions = solver.solve()
 
 	print("Total solutions: ", len(solutions))
 	print("Took ", time.time()-start_time, " seconds")
 
-	F.get_architectures(solutions)
+	start_time=time.time()
+	lower_bound_layers = 4
+	upper_bound_layers = 4
+	solver = SMT_CONV((30,30,30,30), (20,20,20,20), lower_bound_layers, upper_bound_layers)
+	#solver.__to_smt_lib__(file_name="demo.smt2")
+	solutions = solver.solve()
+
+	print("Total solutions: ", len(solutions))
+	print("Took ", time.time()-start_time, " seconds")
+
+	#solver.get_architectures(solutions)
+
+	#start_time=time.time()
+
+	#n_solutions=10
+	#lower_bound_layers = 1
+	#upper_bound_layers = 5
+	#F = SMT_CONV((30,30,30), (20,20,20), lower_bound_layers, upper_bound_layers)
+	#print("#Variables: ", len(F.get_variables()))
+	#uni_wit = UniWit(n_solutions)
+	#solutions = uni_wit.sample(F, verbose=True, viz_verbose=True)
+
+	#print("Total solutions: ", len(solutions))
+	#print("Took ", time.time()-start_time, " seconds")
+
+	#F.get_architectures(solutions)
+
+	#plot_solving_times()
+	#plot_diff_analysis()

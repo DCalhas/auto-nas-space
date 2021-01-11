@@ -1,19 +1,19 @@
 from smt_conv import *
+
 import argparse
+
 import numpy as np
+import math
 
 
 def adj_k_metric(solutions, adj_k):
 	avg_adj_sim = 0.0
-	for i in range(len(solutions) - adj_k):
-		sim = 0.0
 
-		for k in range(adj_k):
-			sim += np.sum(np.logical_xor(solutions[(i) + k], solutions[(i+1) + k]))
+	for i in range(len(solutions)-1):
 
-		avg_adj_sim += sim/adj_k
+		avg_adj_sim += np.sum(np.logical_xor(solutions[(i)], solutions[(i+1)]))
 
-	return avg_adj_sim/(len(solutions)-adj_k)
+	return avg_adj_sim/(len(solutions)-1)
 
 
 parser = argparse.ArgumentParser()
@@ -27,6 +27,8 @@ parser.add_argument('-N', default=4, type=int, help="Upper bound of layers")
 parser.add_argument('-K', default=2, type=int, help="Number of architectures to generate")
 parser.add_argument('-adj_k', default=10, type=int, help="Evaluation metric adjacent K")
 parser.add_argument('-uniwit_k', default=2, type=float, help="Uni Wit algorithm k argument")
+parser.add_argument('-previous_i', default=0, type=int, help="Uni Wit algorithm k argument")
+parser.add_argument('-n_threads', default=1, type=int, help="Number threads to run consecutively")
 parser.add_argument('-verbose', default=0, type=int, help="0 - no prints, 1 - level prints...")
 opt = parser.parse_args()
 
@@ -40,37 +42,25 @@ N = opt.N
 K = opt.K
 adj_k = opt.adj_k
 uniwit_k = opt.uniwit_k
+previous_i = opt.previous_i
+n_threads = opt.n_threads
 verbose = opt.verbose
 
 
 start_time=time.time()
 
-F = SMT_CONV(I, O, n, N)
 
-if(verbose):
-	print("#Variables: ", len(F.get_variables()))
-	pi = 1.0
-	for i in range(len(I)):
-		pi*=(I[i]-O[i])
 
-	#pi=1.0
-	estimated = 0.0
-
-	print("Estimated number solutions: ", (pi*N - pi)**(N-1))
-
-	for n_layer in range(n, N+1):
-		n_factorial = 1.0
-		for i in range(1,n_layer+1):
-			n_factorial *= i
-		estimated += pi*n_factorial
-	print("Estimated number solutions: ", estimated-pi)
 
 if(sampling == 'limited_uniform'):
+	F = SMT_CONV(I, O, n, N)
 	uni_wit = UniWit(K)
-	solutions = uni_wit.sample(F, k=uniwit_k, binary=True, verbose=True, viz_verbose=True)
+	solutions = uni_wit.sample(F, k=uniwit_k, previous_i=previous_i, binary=True, verbose=True, viz_verbose=True)
 elif(sampling == 'limited'):
+	F = SMT_CONV(I, O, n, N)
 	solutions = F.solve(K=K, binary=True)
 elif(sampling == 'all'):
+	F = SMT_CONV(I, O, n, N)
 	solutions = F.solve(binary=True)
 
 binary_solutions = F.get_binary_solutions()
